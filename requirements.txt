@@ -1,0 +1,8 @@
+runpod
+torch
+transformers
+accelerate
+pillow
+opencv-python
+huggingface_hub
+numpy<2.0
