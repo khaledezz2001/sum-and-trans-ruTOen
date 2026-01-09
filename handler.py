@@ -7,7 +7,7 @@ from PIL import Image
 from transformers import AutoProcessor, AutoModelForImageTextToText
 
 # ===============================
-# OFFLINE MODE (RUNTIME ONLY)
+# OFFLINE MODE (RUNTIME)
 # ===============================
 os.environ["HF_HOME"] = "/models/hf"
 os.environ["TRANSFORMERS_CACHE"] = "/models/hf"
@@ -76,7 +76,9 @@ def handler(event):
 
     image = decode_image(event["input"]["image"])
 
-    # ✅ CORRECT QWEN2.5-VL MESSAGE FORMAT
+    # ===============================
+    # QWEN2.5-VL CHAT FORMAT (REQUIRED)
+    # ===============================
     messages = [
         {
             "role": "user",
@@ -88,21 +90,23 @@ def handler(event):
                         "Extract all text from this document and return a CLEAN, STRUCTURED "
                         "Markdown representation.\n\n"
                         "Rules:\n"
-                        "1. Preserve headings and numbering.\n"
-                        "2. Extract parties into Markdown tables with fields: "
-                        "Наименование, ИНН, ОГРН, Адрес, Представитель.\n"
-                        "3. Normalize paragraphs (no OCR line noise).\n"
-                        "4. Keep original language (Russian).\n"
-                        "5. At the end, explicitly state whether signatures and stamps are present.\n"
-                        "6. Do NOT add explanations, comments, or metadata.\n"
-                        "7. Output Markdown ONLY."
+                        "1. Preserve headings and numbering exactly.\n"
+                        "2. For EACH party, output a Markdown table with EXACTLY two columns:\n"
+                        "   | Поле | Значение |\n"
+                        "   Use ONLY these fields and this order:\n"
+                        "   Наименование, ИНН, ОГРН, Адрес, Представитель.\n"
+                        "3. Do NOT merge fields into paragraphs.\n"
+                        "4. Normalize paragraphs (no OCR line noise).\n"
+                        "5. Keep original language (Russian).\n"
+                        "6. At the end, explicitly state whether signatures and stamps are present.\n"
+                        "7. Do NOT add explanations, comments, or metadata.\n"
+                        "8. Output Markdown ONLY."
                     )
                 }
             ]
         }
     ]
 
-    # ✅ Inject image tokens via chat template
     prompt_text = processor.apply_chat_template(
         messages,
         add_generation_prompt=True
@@ -126,15 +130,23 @@ def handler(event):
         skip_special_tokens=True
     )[0]
 
-    # ✅ Strip chat wrapper
-    if "assistant" in decoded:
-        result = decoded.split("assistant", 1)[-1].strip()
-    else:
-        result = decoded.strip()
+    # ===============================
+    # HARD OUTPUT CLEANUP
+    # ===============================
+    # Remove everything before assistant response
+    for marker in ["assistant\n", "assistant\r\n"]:
+        if marker in decoded:
+            decoded = decoded.split(marker, 1)[1]
+
+    decoded = decoded.strip()
+
+    # Remove any leftover system/user noise
+    while decoded.startswith(("system\n", "user\n", ".")):
+        decoded = decoded.split("\n", 1)[-1].strip()
 
     return {
         "format": "markdown",
-        "text": result
+        "text": decoded
     }
 
 
