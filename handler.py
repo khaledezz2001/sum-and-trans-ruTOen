@@ -1,6 +1,7 @@
 import os
 import base64
 import io
+import re
 import torch
 import runpod
 from PIL import Image
@@ -28,14 +29,14 @@ processor = None
 model = None
 
 
-def log(msg: str):
+def log(msg):
     print(f"[BOOT] {msg}", flush=True)
 
 
-def decode_image(b64: str) -> Image.Image:
-    image = Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
-    image.thumbnail((2048, 2048), Image.BICUBIC)
-    return image
+def decode_image(b64):
+    img = Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
+    img.thumbnail((2048, 2048), Image.BICUBIC)
+    return img
 
 
 # ===============================
@@ -46,13 +47,13 @@ def load_model():
     if model is not None:
         return
 
-    log("Loading RolmOCR processor...")
+    log("Loading processor...")
     processor = AutoProcessor.from_pretrained(
         MODEL_PATH,
         local_files_only=True
     )
 
-    log("Loading RolmOCR model...")
+    log("Loading model...")
     model = AutoModelForImageTextToText.from_pretrained(
         MODEL_PATH,
         device_map="auto",
@@ -61,7 +62,60 @@ def load_model():
     )
 
     model.eval()
-    log("RolmOCR model loaded successfully")
+    log("Model loaded successfully")
+
+
+# ===============================
+# PARTY TABLE NORMALIZER
+# ===============================
+FIELDS = ["Наименование", "ИНН", "ОГРН", "Адрес", "Представитель"]
+
+
+def extract_party(block: str) -> dict:
+    data = {}
+    for field in FIELDS:
+        m = re.search(rf"{field}:\s*(.+)", block)
+        if m:
+            data[field] = m.group(1).strip()
+    return data
+
+
+def party_table(title: str, data: dict) -> str:
+    table = f"### {title}\n\n"
+    table += "| Поле | Значение |\n|------|----------|\n"
+    for f in FIELDS:
+        table += f"| {f} | {data.get(f, '')} |\n"
+    return table
+
+
+def normalize_parties(text: str) -> str:
+    # Extract raw blocks
+    exec_block = re.search(r"Исполнитель:(.+?)(Заказчик:)", text, re.S)
+    cust_block = re.search(r"Заказчик:(.+?)(\n\n|$)", text, re.S)
+
+    if not exec_block or not cust_block:
+        return text  # fallback
+
+    exec_data = extract_party(exec_block.group(1))
+    cust_data = extract_party(cust_block.group(1))
+
+    tables = (
+        party_table("Исполнитель", exec_data)
+        + "\n"
+        + party_table("Заказчик", cust_data)
+    )
+
+    # Replace entire section
+    text = re.sub(
+        r"### 1\. СТОРОНЫ ДОГОВОРА.+?### 2\.",
+        "### 1. СТОРОНЫ ДОГОВОРА\n\n"
+        + tables
+        + "\n### 2.",
+        text,
+        flags=re.S,
+    )
+
+    return text
 
 
 # ===============================
@@ -71,14 +125,8 @@ def handler(event):
     log("Handler called")
     load_model()
 
-    if "image" not in event["input"]:
-        return {"error": "Missing image"}
-
     image = decode_image(event["input"]["image"])
 
-    # ===============================
-    # QWEN2.5-VL CHAT FORMAT (REQUIRED)
-    # ===============================
     messages = [
         {
             "role": "user",
@@ -87,33 +135,32 @@ def handler(event):
                 {
                     "type": "text",
                     "text": (
-                        "Extract all text from this document and return a CLEAN, STRUCTURED "
-                        "Markdown representation.\n\n"
+                        "Extract all text from this document.\n\n"
                         "Rules:\n"
-                        "1. Preserve headings and numbering exactly.\n"
-                        "2. For EACH party, output a Markdown table with EXACTLY two columns:\n"
-                        "   | Поле | Значение |\n"
-                        "   Use ONLY these fields and this order:\n"
-                        "   Наименование, ИНН, ОГРН, Адрес, Представитель.\n"
-                        "3. Do NOT merge fields into paragraphs.\n"
-                        "4. Normalize paragraphs (no OCR line noise).\n"
-                        "5. Keep original language (Russian).\n"
-                        "6. At the end, explicitly state whether signatures and stamps are present.\n"
-                        "7. Do NOT add explanations, comments, or metadata.\n"
-                        "8. Output Markdown ONLY."
-                    )
-                }
-            ]
+                        "1. Preserve headings and numbering.\n"
+                        "2. For each party, list fields on separate lines:\n"
+                        "   Наименование:\n"
+                        "   ИНН:\n"
+                        "   ОГРН:\n"
+                        "   Адрес:\n"
+                        "   Представитель:\n"
+                        "3. Do NOT format parties as tables.\n"
+                        "4. Normalize paragraphs.\n"
+                        "5. Keep Russian language.\n"
+                        "6. At the end, state whether signatures and stamps are present.\n"
+                        "7. Output Markdown ONLY."
+                    ),
+                },
+            ],
         }
     ]
 
-    prompt_text = processor.apply_chat_template(
-        messages,
-        add_generation_prompt=True
+    prompt = processor.apply_chat_template(
+        messages, add_generation_prompt=True
     )
 
     inputs = processor(
-        text=[prompt_text],
+        text=[prompt],
         images=[image],
         return_tensors="pt"
     ).to(DEVICE)
@@ -121,7 +168,7 @@ def handler(event):
     with torch.inference_mode():
         output_ids = model.generate(
             **inputs,
-            max_new_tokens=1400,
+            max_new_tokens=1600,
             temperature=0.1
         )
 
@@ -130,19 +177,16 @@ def handler(event):
         skip_special_tokens=True
     )[0]
 
-    # ===============================
-    # HARD OUTPUT CLEANUP
-    # ===============================
-    # Remove everything before assistant response
-    for marker in ["assistant\n", "assistant\r\n"]:
-        if marker in decoded:
-            decoded = decoded.split(marker, 1)[1]
+    # ---- CLEAN CHAT WRAPPER ----
+    if "assistant" in decoded:
+        decoded = decoded.split("assistant", 1)[-1]
 
     decoded = decoded.strip()
-
-    # Remove any leftover system/user noise
     while decoded.startswith(("system\n", "user\n", ".")):
         decoded = decoded.split("\n", 1)[-1].strip()
+
+    # ---- NORMALIZE PARTIES ----
+    decoded = normalize_parties(decoded)
 
     return {
         "format": "markdown",
@@ -151,14 +195,9 @@ def handler(event):
 
 
 # ===============================
-# PRELOAD AT STARTUP
+# PRELOAD
 # ===============================
-log("Preloading model at startup...")
+log("Preloading model...")
 load_model()
 
-# ===============================
-# START RUNPOD
-# ===============================
-runpod.serverless.start({
-    "handler": handler
-})
+runpod.serverless.start({"handler": handler})
