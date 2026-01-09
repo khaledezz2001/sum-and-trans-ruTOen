@@ -1,47 +1,76 @@
-FROM runpod/pytorch:2.1.0-py3.10-cuda11.8
+# -------------------------------------------------
+# Base image
+# -------------------------------------------------
+FROM nvidia/cuda:11.8.0-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 WORKDIR /app
 
 # -------------------------------------------------
-# System deps (only what OCR really needs)
+# HF CACHE PATHS (SAFE)
+# -------------------------------------------------
+ENV HF_HOME=/models/hf
+ENV TRANSFORMERS_CACHE=/models/hf
+ENV HF_HUB_CACHE=/models/hf
+ENV HF_HUB_ENABLE_HF_TRANSFER=0
+ENV HF_HUB_DISABLE_XET=1
+ENV TOKENIZERS_PARALLELISM=false
+
+# -------------------------------------------------
+# System dependencies
 # -------------------------------------------------
 RUN apt-get update && apt-get install -y \
+    python3.10 \
+    python3-pip \
     libgl1 \
     libglib2.0-0 \
     libgomp1 \
     ca-certificates \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
+RUN ln -s /usr/bin/python3 /usr/bin/python
+RUN pip install --upgrade pip
+
 # -------------------------------------------------
-# Python deps
+# Python dependencies
 # -------------------------------------------------
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # -------------------------------------------------
-# 🔥 PRE-DOWNLOAD GOT-OCR MODEL (VERY IMPORTANT)
+# ✅ MODEL DOWNLOAD (ONLINE ONLY DURING BUILD)
 # -------------------------------------------------
-ENV HF_HOME=/models/hf
+RUN HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0 python - <<'EOF'
+from huggingface_hub import snapshot_download
 
-RUN python - <<'EOF'
-from transformers import AutoProcessor, AutoModelForVision2Seq
-import torch
-
-MODEL_ID = "stepfun-ai/GOT-OCR2_0"
-
-print("Downloading GOT-OCR2_0 files...")
-AutoProcessor.from_pretrained(MODEL_ID)
-AutoModelForVision2Seq.from_pretrained(
-    MODEL_ID,
-    torch_dtype=torch.float16
+snapshot_download(
+    repo_id="reducto/RolmOCR",
+    local_dir="/models/hf/reducto/RolmOCR",
+    local_dir_use_symlinks=False,
+    allow_patterns=["*"]
 )
-print("GOT-OCR2_0 downloaded")
+
+print("RolmOCR fully downloaded")
 EOF
 
 # -------------------------------------------------
-# App
+# Verify files (debug, safe)
+# -------------------------------------------------
+RUN ls -lah /models/hf/reducto/RolmOCR
+
+# -------------------------------------------------
+# LOCK OFFLINE MODE (RUNTIME)
+# -------------------------------------------------
+ENV HF_HUB_OFFLINE=1
+ENV TRANSFORMERS_OFFLINE=1
+
+# -------------------------------------------------
+# App code
 # -------------------------------------------------
 COPY handler.py .
 
+# -------------------------------------------------
+# RunPod entrypoint
+# -------------------------------------------------
 CMD ["python", "-u", "handler.py"]
