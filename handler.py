@@ -1,11 +1,11 @@
 import os
 import base64
 import io
-import re
 import torch
 import runpod
 from PIL import Image
 from transformers import AutoProcessor, AutoModelForImageTextToText
+from pdf2image import convert_from_bytes
 
 # ===============================
 # OFFLINE MODE (RUNTIME)
@@ -24,6 +24,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 # ===============================
 MODEL_PATH = "/models/hf/reducto/RolmOCR"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+MAX_PAGES = 20
 
 processor = None
 model = None
@@ -37,6 +38,12 @@ def decode_image(b64):
     img = Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
     img.thumbnail((2048, 2048), Image.BICUBIC)
     return img
+
+
+def decode_pdf(b64):
+    pdf_bytes = base64.b64decode(b64)
+    images = convert_from_bytes(pdf_bytes, dpi=200)
+    return images[:MAX_PAGES]
 
 
 # ===============================
@@ -62,101 +69,26 @@ def load_model():
     )
 
     model.eval()
-    log("Model loaded successfully")
+    log("RolmOCR model loaded")
 
 
 # ===============================
-# PARTY TABLE NORMALIZER
+# OCR ONE PAGE
 # ===============================
-FIELDS = ["Наименование", "ИНН", "ОГРН", "Адрес", "Представитель"]
-
-
-def extract_party(block: str) -> dict:
-    data = {}
-    for field in FIELDS:
-        m = re.search(rf"{field}:\s*(.+)", block)
-        if m:
-            data[field] = m.group(1).strip()
-    return data
-
-
-def party_table(title: str, data: dict) -> str:
-    table = f"### {title}\n\n"
-    table += "| Поле | Значение |\n|------|----------|\n"
-    for f in FIELDS:
-        table += f"| {f} | {data.get(f, '')} |\n"
-    return table
-
-
-def normalize_parties(text: str) -> str:
-    # Extract raw blocks
-    exec_block = re.search(r"Исполнитель:(.+?)(Заказчик:)", text, re.S)
-    cust_block = re.search(r"Заказчик:(.+?)(\n\n|$)", text, re.S)
-
-    if not exec_block or not cust_block:
-        return text  # fallback
-
-    exec_data = extract_party(exec_block.group(1))
-    cust_data = extract_party(cust_block.group(1))
-
-    tables = (
-        party_table("Исполнитель", exec_data)
-        + "\n"
-        + party_table("Заказчик", cust_data)
-    )
-
-    # Replace entire section
-    text = re.sub(
-        r"### 1\. СТОРОНЫ ДОГОВОРА.+?### 2\.",
-        "### 1. СТОРОНЫ ДОГОВОРА\n\n"
-        + tables
-        + "\n### 2.",
-        text,
-        flags=re.S,
-    )
-
-    return text
-
-
-# ===============================
-# HANDLER
-# ===============================
-def handler(event):
-    log("Handler called")
-    load_model()
-
-    image = decode_image(event["input"]["image"])
-
+def ocr_page(image: Image.Image) -> str:
     messages = [
         {
             "role": "user",
             "content": [
                 {"type": "image"},
-                {
-                    "type": "text",
-                    "text": (
-                        "Extract all text from this document.\n\n"
-                        "Rules:\n"
-                        "1. Preserve headings and numbering.\n"
-                        "2. For each party, list fields on separate lines:\n"
-                        "   Наименование:\n"
-                        "   ИНН:\n"
-                        "   ОГРН:\n"
-                        "   Адрес:\n"
-                        "   Представитель:\n"
-                        "3. Do NOT format parties as tables.\n"
-                        "4. Normalize paragraphs.\n"
-                        "5. Keep Russian language.\n"
-                        "6. At the end, state whether signatures and stamps are present.\n"
-                        "7. Output Markdown ONLY."
-                    ),
-                },
-            ],
+                {"type": "text", "text": "Extract all readable text from this page."}
+            ]
         }
     ]
 
     prompt = processor.apply_chat_template(
-        messages, add_generation_prompt=True
+        messages,
+        add_generation_prompt=True
     )
 
     inputs = processor(
@@ -168,7 +100,7 @@ def handler(event):
     with torch.inference_mode():
         output_ids = model.generate(
             **inputs,
-            max_new_tokens=1600,
+            max_new_tokens=1200,
             temperature=0.1
         )
 
@@ -177,7 +109,6 @@ def handler(event):
         skip_special_tokens=True
     )[0]
 
-    # ---- CLEAN CHAT WRAPPER ----
     if "assistant" in decoded:
         decoded = decoded.split("assistant", 1)[-1]
 
@@ -185,12 +116,45 @@ def handler(event):
     while decoded.startswith(("system\n", "user\n", ".")):
         decoded = decoded.split("\n", 1)[-1].strip()
 
-    # ---- NORMALIZE PARTIES ----
-    decoded = normalize_parties(decoded)
+    return decoded
+
+
+# ===============================
+# HANDLER
+# ===============================
+def handler(event):
+    load_model()
+
+    pages = []
+
+    if "image" in event["input"]:
+        pages = [decode_image(event["input"]["image"])]
+
+    elif "file" in event["input"]:
+        pages = decode_pdf(event["input"]["file"])
+
+    else:
+        return {
+            "status": "error",
+            "message": "Missing image or file"
+        }
+
+    extracted_pages = []
+    full_text = []
+
+    for i, page in enumerate(pages, start=1):
+        text = ocr_page(page)
+        extracted_pages.append({
+            "page": i,
+            "text": text
+        })
+        full_text.append(text)
 
     return {
-        "format": "markdown",
-        "text": decoded
+        "status": "success",
+        "total_pages": len(extracted_pages),
+        "extracted_text": "\n\n".join(full_text),
+        "pages": extracted_pages
     }
 
 
@@ -200,4 +164,6 @@ def handler(event):
 log("Preloading model...")
 load_model()
 
-runpod.serverless.start({"handler": handler})
+runpod.serverless.start({
+    "handler": handler
+})
