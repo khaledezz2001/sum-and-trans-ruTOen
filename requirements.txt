@@ -8,3 +8,4 @@ opencv-python
 huggingface_hub
 protobuf
 numpy<2.0
+pdf2image
