@@ -47,18 +47,6 @@ def decode_pdf(b64):
 
 
 # ===============================
-# CLEAN OCR OUTPUT (FINAL FIX)
-# ===============================
-def clean_ocr_output(text: str) -> str:
-    """
-    Keeps only content AFTER the last 'assistant'
-    """
-    if "assistant" in text:
-        text = text.rsplit("assistant", 1)[-1]
-    return text.strip()
-
-
-# ===============================
 # LOAD MODEL ONCE
 # ===============================
 def load_model():
@@ -121,6 +109,13 @@ def ocr_page(image: Image.Image) -> str:
         skip_special_tokens=True
     )[0]
 
+    if "assistant" in decoded:
+        decoded = decoded.split("assistant", 1)[-1]
+
+    decoded = decoded.strip()
+    while decoded.startswith(("system\n", "user\n", ".")):
+        decoded = decoded.split("\n", 1)[-1].strip()
+
     return decoded
 
 
@@ -148,9 +143,7 @@ def handler(event):
     full_text = []
 
     for i, page in enumerate(pages, start=1):
-        raw_text = ocr_page(page)
-        text = clean_ocr_output(raw_text)
-
+        text = ocr_page(page)
         extracted_pages.append({
             "page": i,
             "text": text
