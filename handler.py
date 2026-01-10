@@ -47,14 +47,14 @@ def decode_pdf(b64):
 
 
 # ===============================
-# CLEAN OCR OUTPUT (IMPROVED)
+# CLEAN OCR OUTPUT (FINAL FIX)
 # ===============================
 def clean_ocr_output(text: str) -> str:
     """
-    Removes anything before and including the word 'assistant'
+    Keeps only content AFTER the last 'assistant'
     """
     if "assistant" in text:
-        text = text.split("assistant", 1)[1]
+        text = text.rsplit("assistant", 1)[-1]
     return text.strip()
 
 
