@@ -51,7 +51,22 @@ def load_model():
 
 
 # ===============================
-# UTILITIES
+# CLEAN MODEL OUTPUT
+# ===============================
+def clean_model_output(text: str) -> str:
+    if "assistant" in text:
+        text = text.split("assistant", 1)[-1]
+
+    text = text.strip()
+
+    while text.startswith(("system\n", "user\n", ".")):
+        text = text.split("\n", 1)[-1].strip()
+
+    return text
+
+
+# ===============================
+# DECODE INPUT
 # ===============================
 def decode_image(b64):
     img = Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
@@ -73,12 +88,18 @@ def ocr_page(image):
             "role": "user",
             "content": [
                 {"type": "image"},
-                {"type": "text", "text": "Extract all readable text from this page in the original language."}
+                {
+                    "type": "text",
+                    "text": "Extract all readable text from this page in the original language."
+                }
             ]
         }
     ]
 
-    prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
+    prompt = processor.apply_chat_template(
+        messages,
+        add_generation_prompt=True
+    )
 
     inputs = processor(
         text=[prompt],
@@ -87,14 +108,21 @@ def ocr_page(image):
     ).to(DEVICE)
 
     with torch.inference_mode():
-        output_ids = model.generate(**inputs, max_new_tokens=1200)
+        output_ids = model.generate(
+            **inputs,
+            max_new_tokens=1200
+        )
 
-    text = processor.batch_decode(output_ids, skip_special_tokens=True)[0]
-    return text.split("assistant", 1)[-1].strip()
+    raw = processor.batch_decode(
+        output_ids,
+        skip_special_tokens=True
+    )[0]
+
+    return clean_model_output(raw)
 
 
 # ===============================
-# TRANSLATE RU -> EN
+# TRANSLATE RU → EN
 # ===============================
 def translate_to_english(text_ru: str) -> str:
     messages = [
@@ -113,7 +141,10 @@ def translate_to_english(text_ru: str) -> str:
         }
     ]
 
-    prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
+    prompt = processor.apply_chat_template(
+        messages,
+        add_generation_prompt=True
+    )
 
     inputs = processor(
         text=[prompt],
@@ -121,10 +152,17 @@ def translate_to_english(text_ru: str) -> str:
     ).to(DEVICE)
 
     with torch.inference_mode():
-        output_ids = model.generate(**inputs, max_new_tokens=1400)
+        output_ids = model.generate(
+            **inputs,
+            max_new_tokens=1600
+        )
 
-    text_en = processor.batch_decode(output_ids, skip_special_tokens=True)[0]
-    return text_en.split("assistant", 1)[-1].strip()
+    raw = processor.batch_decode(
+        output_ids,
+        skip_special_tokens=True
+    )[0]
+
+    return clean_model_output(raw)
 
 
 # ===============================
@@ -138,24 +176,27 @@ def handler(event):
     elif "file" in event["input"]:
         pages = decode_pdf(event["input"]["file"])
     else:
-        return {"status": "error", "message": "Missing image or file"}
+        return {
+            "status": "error",
+            "message": "Missing image or file input"
+        }
 
     results = []
     all_ru = []
     all_en = []
 
     for i, page in enumerate(pages, start=1):
-        ru = ocr_page(page)
-        en = translate_to_english(ru)
+        ru_text = ocr_page(page)
+        en_text = translate_to_english(ru_text)
 
         results.append({
             "page": i,
-            "text_ru": ru,
-            "text_en": en
+            "text_ru": ru_text,
+            "text_en": en_text
         })
 
-        all_ru.append(ru)
-        all_en.append(en)
+        all_ru.append(ru_text)
+        all_en.append(en_text)
 
     return {
         "status": "success",
@@ -167,7 +208,9 @@ def handler(event):
 
 
 # ===============================
-# START
+# START SERVER
 # ===============================
 load_model()
-runpod.serverless.start({"handler": handler})
+runpod.serverless.start({
+    "handler": handler
+})
