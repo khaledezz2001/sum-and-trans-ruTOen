@@ -51,6 +51,15 @@ def load_model():
 
 
 # ===============================
+# CLEAN OUTPUT (FINAL)
+# ===============================
+def clean_model_output(text: str) -> str:
+    if "assistant" in text:
+        return text.split("assistant", 1)[-1].strip()
+    return text.strip()
+
+
+# ===============================
 # INPUT DECODERS
 # ===============================
 def decode_image(b64):
@@ -65,55 +74,57 @@ def decode_pdf(b64):
 
 
 # ===============================
-# OCR (RU)
+# OCR PAGE (RU)
 # ===============================
 def ocr_page(image):
-    prompt = "<image>\nExtract all readable text from this page in the original language."
+    messages = [{
+        "role": "user",
+        "content": [
+            {"type": "image"},
+            {"type": "text", "text": "Extract all readable text from this page in the original language."}
+        ]
+    }]
+
+    prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
 
     inputs = processor(
-        images=image,
-        text=prompt,
+        text=[prompt],
+        images=[image],
         return_tensors="pt"
     ).to(DEVICE)
 
     with torch.inference_mode():
-        output_ids = model.generate(
-            **inputs,
-            max_new_tokens=1200
-        )
+        output_ids = model.generate(**inputs, max_new_tokens=1200)
 
-    return processor.batch_decode(
-        output_ids,
-        skip_special_tokens=True
-    )[0].strip()
-
+    raw = processor.batch_decode(output_ids, skip_special_tokens=True)[0]
+    return clean_model_output(raw)
 
 
 # ===============================
 # TRANSLATE RU → EN
 # ===============================
 def translate_to_english(text_ru):
-    prompt = (
-        "Translate the following text from Russian to clear, professional English.\n\n"
-        "Do not summarize. Do not explain. Translate faithfully.\n\n"
-        f"{text_ru}"
-    )
+    messages = [{
+        "role": "user",
+        "content": [{
+            "type": "text",
+            "text": (
+                "Translate the following text from Russian to clear, professional English.\n\n"
+                "Do not summarize. Do not explain. Translate faithfully.\n\n"
+                f"{text_ru}"
+            )
+        }]
+    }]
 
-    inputs = processor(
-        text=prompt,
-        return_tensors="pt"
-    ).to(DEVICE)
+    prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
+
+    inputs = processor(text=[prompt], return_tensors="pt").to(DEVICE)
 
     with torch.inference_mode():
-        output_ids = model.generate(
-            **inputs,
-            max_new_tokens=1600
-        )
+        output_ids = model.generate(**inputs, max_new_tokens=1600)
 
-    return processor.batch_decode(
-        output_ids,
-        skip_special_tokens=True
-    )[0].strip()
+    raw = processor.batch_decode(output_ids, skip_special_tokens=True)[0]
+    return clean_model_output(raw)
 
 
 # ===============================
@@ -129,9 +140,7 @@ def handler(event):
     else:
         return {"status": "error", "message": "Missing image or file"}
 
-    results = []
-    all_ru = []
-    all_en = []
+    results, all_ru, all_en = [], [], []
 
     for i, page in enumerate(pages, 1):
         ru = ocr_page(page)
