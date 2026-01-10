@@ -68,7 +68,7 @@ def decode_pdf(b64):
 # OCR (RU)
 # ===============================
 def ocr_page(image):
-    prompt = "Extract all readable text from this page in the original language."
+    prompt = "<image>\nExtract all readable text from this page in the original language."
 
     inputs = processor(
         images=image,
@@ -86,6 +86,7 @@ def ocr_page(image):
         output_ids,
         skip_special_tokens=True
     )[0].strip()
+
 
 
 # ===============================
