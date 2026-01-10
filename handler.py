@@ -104,17 +104,18 @@ def ocr_page(image: Image.Image) -> str:
             temperature=0.1
         )
 
+    # ---------------------------------------------------------
+    # IMPORTANT FIX:
+    # output_ids contains: [PROMPT TOKENS + GENERATED TOKENS]
+    # We slice off the prompt tokens so we ONLY decode the
+    # model's actual OCR output (no instruction, no "assistant")
+    # ---------------------------------------------------------
+    generated_ids = output_ids[:, inputs["input_ids"].shape[1]:]
+
     decoded = processor.batch_decode(
-        output_ids,
+        generated_ids,
         skip_special_tokens=True
-    )[0]
-
-    if "assistant" in decoded:
-        decoded = decoded.split("assistant", 1)[-1]
-
-    decoded = decoded.strip()
-    while decoded.startswith(("system\n", "user\n", ".")):
-        decoded = decoded.split("\n", 1)[-1].strip()
+    )[0].strip()
 
     return decoded
 
