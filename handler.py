@@ -51,22 +51,16 @@ def load_model():
 
 
 # ===============================
-# CLEAN MODEL OUTPUT
+# CLEAN OUTPUT (FINAL)
 # ===============================
 def clean_model_output(text: str) -> str:
     if "assistant" in text:
-        text = text.split("assistant", 1)[-1]
-
-    text = text.strip()
-
-    while text.startswith(("system\n", "user\n", ".")):
-        text = text.split("\n", 1)[-1].strip()
-
-    return text
+        return text.split("assistant", 1)[-1].strip()
+    return text.strip()
 
 
 # ===============================
-# DECODE INPUT
+# INPUT DECODERS
 # ===============================
 def decode_image(b64):
     img = Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
@@ -83,23 +77,15 @@ def decode_pdf(b64):
 # OCR PAGE (RU)
 # ===============================
 def ocr_page(image):
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "image"},
-                {
-                    "type": "text",
-                    "text": "Extract all readable text from this page in the original language."
-                }
-            ]
-        }
-    ]
+    messages = [{
+        "role": "user",
+        "content": [
+            {"type": "image"},
+            {"type": "text", "text": "Extract all readable text from this page in the original language."}
+        ]
+    }]
 
-    prompt = processor.apply_chat_template(
-        messages,
-        add_generation_prompt=True
-    )
+    prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
 
     inputs = processor(
         text=[prompt],
@@ -108,60 +94,36 @@ def ocr_page(image):
     ).to(DEVICE)
 
     with torch.inference_mode():
-        output_ids = model.generate(
-            **inputs,
-            max_new_tokens=1200
-        )
+        output_ids = model.generate(**inputs, max_new_tokens=1200)
 
-    raw = processor.batch_decode(
-        output_ids,
-        skip_special_tokens=True
-    )[0]
-
+    raw = processor.batch_decode(output_ids, skip_special_tokens=True)[0]
     return clean_model_output(raw)
 
 
 # ===============================
 # TRANSLATE RU → EN
 # ===============================
-def translate_to_english(text_ru: str) -> str:
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {
-                    "type": "text",
-                    "text": (
-                        "Translate the following text from Russian to clear, professional English.\n\n"
-                        "Do not summarize. Do not explain. Translate faithfully.\n\n"
-                        f"{text_ru}"
-                    )
-                }
-            ]
-        }
-    ]
+def translate_to_english(text_ru):
+    messages = [{
+        "role": "user",
+        "content": [{
+            "type": "text",
+            "text": (
+                "Translate the following text from Russian to clear, professional English.\n\n"
+                "Do not summarize. Do not explain. Translate faithfully.\n\n"
+                f"{text_ru}"
+            )
+        }]
+    }]
 
-    prompt = processor.apply_chat_template(
-        messages,
-        add_generation_prompt=True
-    )
+    prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
 
-    inputs = processor(
-        text=[prompt],
-        return_tensors="pt"
-    ).to(DEVICE)
+    inputs = processor(text=[prompt], return_tensors="pt").to(DEVICE)
 
     with torch.inference_mode():
-        output_ids = model.generate(
-            **inputs,
-            max_new_tokens=1600
-        )
+        output_ids = model.generate(**inputs, max_new_tokens=1600)
 
-    raw = processor.batch_decode(
-        output_ids,
-        skip_special_tokens=True
-    )[0]
-
+    raw = processor.batch_decode(output_ids, skip_special_tokens=True)[0]
     return clean_model_output(raw)
 
 
@@ -176,27 +138,22 @@ def handler(event):
     elif "file" in event["input"]:
         pages = decode_pdf(event["input"]["file"])
     else:
-        return {
-            "status": "error",
-            "message": "Missing image or file input"
-        }
+        return {"status": "error", "message": "Missing image or file"}
 
-    results = []
-    all_ru = []
-    all_en = []
+    results, all_ru, all_en = [], [], []
 
-    for i, page in enumerate(pages, start=1):
-        ru_text = ocr_page(page)
-        en_text = translate_to_english(ru_text)
+    for i, page in enumerate(pages, 1):
+        ru = ocr_page(page)
+        en = translate_to_english(ru)
 
         results.append({
             "page": i,
-            "text_ru": ru_text,
-            "text_en": en_text
+            "text_ru": ru,
+            "text_en": en
         })
 
-        all_ru.append(ru_text)
-        all_en.append(en_text)
+        all_ru.append(ru)
+        all_en.append(en)
 
     return {
         "status": "success",
@@ -208,9 +165,7 @@ def handler(event):
 
 
 # ===============================
-# START SERVER
+# START
 # ===============================
 load_model()
-runpod.serverless.start({
-    "handler": handler
-})
+runpod.serverless.start({"handler": handler})
