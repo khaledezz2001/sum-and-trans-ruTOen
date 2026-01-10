@@ -8,7 +8,7 @@ from transformers import AutoProcessor, AutoModelForImageTextToText
 from pdf2image import convert_from_bytes
 
 # ===============================
-# OFFLINE MODE (RUNTIME)
+# OFFLINE MODE
 # ===============================
 os.environ["HF_HOME"] = "/models/hf"
 os.environ["TRANSFORMERS_CACHE"] = "/models/hf"
@@ -19,9 +19,6 @@ os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
 os.environ["HF_HUB_DISABLE_XET"] = "1"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-# ===============================
-# CONFIG
-# ===============================
 MODEL_PATH = "/models/hf/reducto/RolmOCR"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 MAX_PAGES = 20
@@ -30,37 +27,19 @@ processor = None
 model = None
 
 
-def log(msg):
-    print(f"[BOOT] {msg}", flush=True)
-
-
-def decode_image(b64):
-    img = Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
-    img.thumbnail((2048, 2048), Image.BICUBIC)
-    return img
-
-
-def decode_pdf(b64):
-    pdf_bytes = base64.b64decode(b64)
-    images = convert_from_bytes(pdf_bytes, dpi=200)
-    return images[:MAX_PAGES]
-
-
 # ===============================
-# LOAD MODEL ONCE
+# LOAD MODEL
 # ===============================
 def load_model():
     global processor, model
     if model is not None:
         return
 
-    log("Loading processor...")
     processor = AutoProcessor.from_pretrained(
         MODEL_PATH,
         local_files_only=True
     )
 
-    log("Loading model...")
     model = AutoModelForImageTextToText.from_pretrained(
         MODEL_PATH,
         device_map="auto",
@@ -69,27 +48,37 @@ def load_model():
     )
 
     model.eval()
-    log("RolmOCR model loaded")
 
 
 # ===============================
-# OCR ONE PAGE
+# UTILITIES
 # ===============================
-def ocr_page(image: Image.Image) -> str:
+def decode_image(b64):
+    img = Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
+    img.thumbnail((2048, 2048), Image.BICUBIC)
+    return img
+
+
+def decode_pdf(b64):
+    pdf_bytes = base64.b64decode(b64)
+    return convert_from_bytes(pdf_bytes, dpi=200)[:MAX_PAGES]
+
+
+# ===============================
+# OCR PAGE (RU)
+# ===============================
+def ocr_page(image):
     messages = [
         {
             "role": "user",
             "content": [
                 {"type": "image"},
-                {"type": "text", "text": "Extract all readable text from this page."}
+                {"type": "text", "text": "Extract all readable text from this page in the original language."}
             ]
         }
     ]
 
-    prompt = processor.apply_chat_template(
-        messages,
-        add_generation_prompt=True
-    )
+    prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
 
     inputs = processor(
         text=[prompt],
@@ -98,25 +87,44 @@ def ocr_page(image: Image.Image) -> str:
     ).to(DEVICE)
 
     with torch.inference_mode():
-        output_ids = model.generate(
-            **inputs,
-            max_new_tokens=1200,
-            temperature=0.1
-        )
+        output_ids = model.generate(**inputs, max_new_tokens=1200)
 
-    decoded = processor.batch_decode(
-        output_ids,
-        skip_special_tokens=True
-    )[0]
+    text = processor.batch_decode(output_ids, skip_special_tokens=True)[0]
+    return text.split("assistant", 1)[-1].strip()
 
-    if "assistant" in decoded:
-        decoded = decoded.split("assistant", 1)[-1]
 
-    decoded = decoded.strip()
-    while decoded.startswith(("system\n", "user\n", ".")):
-        decoded = decoded.split("\n", 1)[-1].strip()
+# ===============================
+# TRANSLATE RU -> EN
+# ===============================
+def translate_to_english(text_ru: str) -> str:
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        "Translate the following text from Russian to clear, professional English.\n\n"
+                        "Do not summarize. Do not explain. Translate faithfully.\n\n"
+                        f"{text_ru}"
+                    )
+                }
+            ]
+        }
+    ]
 
-    return decoded
+    prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
+
+    inputs = processor(
+        text=[prompt],
+        return_tensors="pt"
+    ).to(DEVICE)
+
+    with torch.inference_mode():
+        output_ids = model.generate(**inputs, max_new_tokens=1400)
+
+    text_en = processor.batch_decode(output_ids, skip_special_tokens=True)[0]
+    return text_en.split("assistant", 1)[-1].strip()
 
 
 # ===============================
@@ -125,45 +133,41 @@ def ocr_page(image: Image.Image) -> str:
 def handler(event):
     load_model()
 
-    pages = []
-
     if "image" in event["input"]:
         pages = [decode_image(event["input"]["image"])]
-
     elif "file" in event["input"]:
         pages = decode_pdf(event["input"]["file"])
-
     else:
-        return {
-            "status": "error",
-            "message": "Missing image or file"
-        }
+        return {"status": "error", "message": "Missing image or file"}
 
-    extracted_pages = []
-    full_text = []
+    results = []
+    all_ru = []
+    all_en = []
 
     for i, page in enumerate(pages, start=1):
-        text = ocr_page(page)
-        extracted_pages.append({
+        ru = ocr_page(page)
+        en = translate_to_english(ru)
+
+        results.append({
             "page": i,
-            "text": text
+            "text_ru": ru,
+            "text_en": en
         })
-        full_text.append(text)
+
+        all_ru.append(ru)
+        all_en.append(en)
 
     return {
         "status": "success",
-        "total_pages": len(extracted_pages),
-        "extracted_text": "\n\n".join(full_text),
-        "pages": extracted_pages
+        "total_pages": len(results),
+        "extracted_text_ru": "\n\n".join(all_ru),
+        "extracted_text_en": "\n\n".join(all_en),
+        "pages": results
     }
 
 
 # ===============================
-# PRELOAD
+# START
 # ===============================
-log("Preloading model...")
 load_model()
-
-runpod.serverless.start({
-    "handler": handler
-})
+runpod.serverless.start({"handler": handler})
