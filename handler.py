@@ -148,7 +148,7 @@ def handler(event):
             "page": i,
             "text": text.replace(PREFIX, "", 1)
         })
-        full_text.append(text)
+        full_text.append(text.replace(PREFIX, "", 1))
 
     return {
         "status": "success",
