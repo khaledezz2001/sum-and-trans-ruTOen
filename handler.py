@@ -124,7 +124,7 @@ def ocr_page(image: Image.Image) -> str:
 # ===============================
 def handler(event):
     load_model()
-
+    PREFIX = "Extract all readable text from this page.\nassistant\n"
     pages = []
 
     if "image" in event["input"]:
@@ -146,7 +146,7 @@ def handler(event):
         text = ocr_page(page)
         extracted_pages.append({
             "page": i,
-            "text": text
+            "text": text.replace(PREFIX, "", 1)
         })
         full_text.append(text)
 
