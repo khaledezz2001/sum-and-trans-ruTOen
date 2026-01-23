@@ -81,7 +81,7 @@ def ocr_page(image: Image.Image) -> str:
             "role": "user",
             "content": [
                 {"type": "image"},
-                {"type": "text", "text": "Extract all readable text from this page."}
+                {"type": "text", "text": "Return the plain text representation of this document as if you were reading it naturally."}
             ]
         }
     ]
