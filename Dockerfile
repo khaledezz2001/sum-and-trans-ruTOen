@@ -1,66 +1,43 @@
-FROM nvidia/cuda:11.8.0-runtime-ubuntu22.04
+FROM nvidia/cuda:12.4.0-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
-WORKDIR /app
 
-# -------------------------------
-# HF CACHE PATHS
-# -------------------------------
-ENV HF_HOME=/models/hf
-ENV TRANSFORMERS_CACHE=/models/hf
-ENV HF_HUB_CACHE=/models/hf
-ENV HF_HUB_ENABLE_HF_TRANSFER=0
-ENV HF_HUB_DISABLE_XET=1
-ENV TOKENIZERS_PARALLELISM=false
-
-# -------------------------------
-# SYSTEM DEPENDENCIES
-# -------------------------------
 RUN apt-get update && apt-get install -y \
     python3.10 \
     python3-pip \
-    poppler-utils \
-    libgl1 \
-    libglib2.0-0 \
-    libgomp1 \
-    ca-certificates \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-RUN ln -s /usr/bin/python3 /usr/bin/python
-RUN pip install --upgrade pip
+COPY requirements.txt /requirements.txt
+RUN pip install --no-cache-dir -r /requirements.txt
 
-# -------------------------------
-# PYTHON DEPENDENCIES
-# -------------------------------
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# -------------------------------
-# MODEL DOWNLOAD (ONLINE AT BUILD)
-# -------------------------------
-RUN HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0 python - <<'EOF'
+# Qwen 2.5 7B Instruct (FP16 – stable)
+RUN python3 - <<EOF
 from huggingface_hub import snapshot_download
-
 snapshot_download(
-    repo_id="reducto/RolmOCR",
-    local_dir="/models/hf/reducto/RolmOCR",
-    local_dir_use_symlinks=False,
-    allow_patterns=["*"]
+    repo_id="Qwen/Qwen2.5-7B-Instruct",
+    local_dir="/models/hf/qwen",
+    local_dir_use_symlinks=False
 )
-
-print("RolmOCR downloaded")
 EOF
 
-# -------------------------------
-# LOCK OFFLINE MODE (RUNTIME)
-# -------------------------------
+# Marian RU → EN
+RUN python3 - <<EOF
+from huggingface_hub import snapshot_download
+snapshot_download(
+    repo_id="Helsinki-NLP/opus-mt-ru-en",
+    local_dir="/models/hf/marian-ru-en",
+    local_dir_use_symlinks=False
+)
+EOF
+
+ENV HF_HOME=/models/hf
+ENV TRANSFORMERS_CACHE=/models/hf
+ENV HF_HUB_CACHE=/models/hf
 ENV HF_HUB_OFFLINE=1
 ENV TRANSFORMERS_OFFLINE=1
 
-# -------------------------------
-# APP
-# -------------------------------
-COPY handler.py .
+WORKDIR /app
+COPY handler.py /app/handler.py
 
-CMD ["python", "-u", "handler.py"]
+CMD ["python3", "handler.py"]
